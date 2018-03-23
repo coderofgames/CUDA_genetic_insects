@@ -1,0 +1,85 @@
+User Story
+
+The system shall perform basic genetic algorithms (possibly more than one population in parallel)
+using CUDA. This shall be based on the Genetic insects example again.
+
+
+Technical Features of Genetic Insects
+
+- create a random population of insect chromosomes (32 bit numbers)
+- evaluate their fitness according to a fitness criteria (number of genes matching target genetic)
+- breed the population selecting using a roulette wheel
+- mutate the population
+
+
+Project constraints
+
+- project must use CUDA, and C++
+- project must be complete in 2 days
+
+
+Predicted Phases
+
+Phase 1: implement basic Genetic Insects (GE)
+Phase 2: implement extensions made easy with parallel computation
+Phase 3: any advances, branches, etc
+
+
+Functional Requirements
+
+Definitions, D: Description, R: Rationale
+"The system must"
+1. D: contain some kind of RNG for random number generation, R: GE uses random numbers extensively
+2. D: use binary operations in the CUDA kernel to select genes, R: this is used in GE
+3. D: sort the population of insects based on fitness, R: necessary for the algorithm
+4. D: breed the insects using parallel alternative to Roulette wheel, R: Roulette wheel isn't easy in parallel
+5. D: Use random numbers to mutate the genes, R: needed for algorithm
+6. D: Collect statistical data on performance, R: GE collected statistics
+7. D: Perform cumulative sum, R: GE performs Cumulative Sum, <this depends on 4>
+
+End Phase Requirements phase 1
+
+
+Beginning the real solution
+
+Definitions, PL: Priority Level, TN: Test Number
+Finding solutions for requirements 1-6
+1. There's more than one CUDA random number generator, can do this with pre-computed table, TN: 4,PL: 4
+2. Binary operations should work in CUDA, requires Test TN: 1, PL: 1
+3. Sorting algorithms exist in CUDA SDK, TN: 3, PL: 5
+(note here the process returns to Functional requirements to define 7) 
+4. Method not known yet (23/03/2018), requires web search PL: 1
+5. Same as solution for FR:1
+6. CUDA kernels to compute the mean, median. CUDA kernels to compute the variance and std dev. TN: 3 PL:3
+7. Cumulative sum might not be needed as it is a feature of roulette wheel algorithm for selection. PL:4
+
+Feasibility Analysis
+
+The project appears worth doing to advance at a level of understanding of Genetic algorithms.
+The project appears to be possible with current resources although there is the need for another 
+type of roulette wheel algorithm. If the Roulette wheel cannot be simply defined then the project can
+be scrapped.
+
+
+Priority Sort of Functional Requirements FR
+
+PL 1: 2, 4
+PL 2:
+PL 3: 6
+PL 4: 1,5
+PL 5: 3
+
+
+Tests Listed
+
+TN: 1, FR: 2, PL: 1,
+TN: 2, FR: 6, PL: 3,
+TN: 3, FR: 3, PL: 5,
+TN: 4, FR, 1,5, PL: 4
+
+Tests Sorted by priority (although approximately) its clear tests can be conducted in order
+1,2,4,3
+
+First order of business:
+Resolve solution to FR 4, since it has priority level PL: 1 and is still unknown.
+
