@@ -20,7 +20,7 @@ Project constraints
 
 Predicted Phases
 
-Phase 1: implement basic Genetic Insects (GE)
+Phase 1: implement basic Genetic Insects (GI)
 Phase 2: implement extensions made easy with parallel computation
 Phase 3: any advances, branches, etc
 
@@ -29,13 +29,13 @@ Functional Requirements
 
 Definitions, D: Description, R: Rationale
 "The system must"
-1. D: contain some kind of RNG for random number generation, R: GE uses random numbers extensively
+1. D: contain some kind of RNG for random number generation, R: GI uses random numbers extensively
 2. D: use binary operations in the CUDA kernel to select genes, R: this is used in GE
 3. D: sort the population of insects based on fitness, R: necessary for the algorithm
 4. D: breed the insects using parallel alternative to Roulette wheel, R: Roulette wheel isn't easy in parallel
 5. D: Use random numbers to mutate the genes, R: needed for algorithm
-6. D: Collect statistical data on performance, R: GE collected statistics
-7. D: Perform cumulative sum, R: GE performs Cumulative Sum, <this depends on 4>
+6. D: Collect statistical data on performance, R: GI collected statistics
+7. D: Perform cumulative sum, R: GI performs Cumulative Sum, <this depends on 4>
 
 End Phase Requirements phase 1
 
@@ -82,4 +82,20 @@ Tests Sorted by priority (although approximately) its clear tests can be conduct
 
 First order of business:
 Resolve solution to FR 4, since it has priority level PL: 1 and is still unknown.
+Paper: http://etheses.dur.ac.uk/11211/1/thesis_final.pdf?DDD10+
+http://www.scs-europe.net/dlib/2014/ecms14papers/dis_ECMS2014_0071.pdf
+http://www.cs.hiroshima-u.ac.jp/cs/_media/4893a094.pdf
 
+Updated Requirements
+
+- Requirement 7 will be needed regardless of whether the roulette wheel is used, because the reduction operation (a standard CUDA primitive) will
+be useful for computing the statistical mean, this is needed to compute variance and standard deviation.
+
+New Constraints
+Definitions, O: originator
+"the system will"
+8. D: Use the in-built CUDA structure to give structure to the algorithm, R: This allows use of blocks and warps to address populations and sub-populations. O: CUDA samples for reduction and scan operations
+
+This constraint is in the notation of a requirement, the non abstract features of the program are the reason it is defined as a constraint. The use of blocks
+and warps is derived from the technical features of the reduction and scan samples from the CUDA SDK, this allows a simplification of the structure
+of the Genetic Insects populations (under the assumption that in ant colony optimization a larger number of smaller populations worked better than large populations)
