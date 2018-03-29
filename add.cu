@@ -1,7 +1,14 @@
 #include <iostream>
 #include <math.h>
 #include <curand.h>
+#include <curand_kernel.h>
+#include <stdio.h>
 
+// For the CUDA runtime routines (prefixed with "cuda_")
+#include <cuda_runtime.h>
+
+// not used here, but will be later
+//#include <cooperative_groups.h>
 
 
 /**
@@ -10,17 +17,20 @@
 int
 insect_test(bool b_verify);
 
-// function to add the elements of two arrays
-__global__
-void add(int n, float *x, float *y)
-{
-  for (int i = 0; i < n; i++)
-      y[i] = x[i] + y[i];
-}
+#define WARP_SIZE 32
 
 
 
 
+
+
+
+
+
+//// 
+//// 	PORTIONS OF THIS CODE ARE BASED ON NVIDIA SAMPLES BUT HIGHLY MODIFIED
+//// 	THE PORTIONS THAT CONTAIN NVIDIA CODE ARE EXEMPT FROM THE GPL
+////
 /**
  * Copyright 1993-2015 NVIDIA Corporation.  All rights reserved.
  *
@@ -32,38 +42,44 @@ void add(int n, float *x, float *y)
  *
  */
 
-/**
- * Vector addition: C = A + B.
- *
- * This sample is a very basic sample that implements element by element
- * vector addition. It is the same as the sample illustrating Chapter 2
- * of the programming guide with some additions like error checking.
- */
 
-#include <stdio.h>
 
-// For the CUDA runtime routines (prefixed with "cuda_")
-#include <cuda_runtime.h>
 
-#include <cooperative_groups.h>
+/*
+Modern Graphics Processing Units (GPU's) contain massively parallel thread processing
+capability. CUDA programs are instructions for the individual threads.
 
-//#include <helper_cuda.h>
-/**
- * CUDA Kernel Device code
- *
- * Computes the vector addition of A and B into C. The 3 vectors have the same
- * number of elements numElements.
- */
-__global__ void
-vectorAdd(const float *A, const float *B, float *C, int numElements)
-{
-    int i = blockDim.x * blockIdx.x + threadIdx.x;
+The top most thread structure of a CUDA gpu program is the grid. The grid contains
+multiple tiles called blocks, and the blocks contain threads. Grids and blocks can have
+up to 3 dimensions of indices.
 
-    if (i < numElements)
-    {
-        C[i] = A[i] + B[i];
-    }
-}
+On modern hardware a typical maximum block size is 1024 threads, however they are often a lot less. 
+The threads in each block are launched in warps (sets) of 32 threads. Each thread in a warp executes at the same time 
+in the hardware, however due to program branches they also need to be synchronized. The program can achieve block level
+synchronization with a call to "__syncthreads()", however on newer hardware with larger blocks some alternatives
+to block level synchronisation have appeared, including: cooperative groups; "__syncwarp()", a warp level synchronisation call;
+and functions like "__shfl_down_sync()" which perform warp level shuffle and synchronisation operations. 
+
+The memory structure on CUDA GPU's is simple. Each thread has "slow" access to the larger global memory, each block has a small shared
+memory (faster) and register memory space (fastest). Array's of data uploaded from the CPU (host) RAM to the GPU (device) VRAM will typically reside in
+global memory. Shared memory is declared in the CUDA program "kernel" using the "__shared__" keyword, and data must be fetched from global memory (or texture)
+into the shared memory, or generated in kernel.bThe shared memory can be very useful for warp level processing.   
+
+Terminology:
+blockIndx : This is the index of the block within the grid.
+blockDim : The number of threads per block
+threadIdx : The index of the thread in the block
+warpID : the identifier of the warp in the block
+laneID : the index of the thread within the warp.
+
+
+This program takes advantage of warp level synchronization (or will do) to compute genetic algorithms (GA) where each warp represents a population (gene pool).
+ 
+
+
+
+*/
+
 
 // stack overflow
 __forceinline__ __device__ unsigned int get_lane_id() // //threadIdx.x % WARP_SIZE;
@@ -81,16 +97,7 @@ __forceinline__ __device__ unsigned int get_warp_id() //threadIdx.x / WARP_SIZE;
 }
 
 
-
-template<typename T>
-__device__ 
-T swap(T x, int mask, int dir)
-{
-	T y = __shfl_xor_sync(0xffffffff, x,mask);
-	return (x < y)==dir ? y : x;
-}
-
-
+// CUB
 __device__ __forceinline__ int bfe(int val, int lane)
 {
 	unsigned x;
@@ -98,36 +105,6 @@ __device__ __forceinline__ int bfe(int val, int lane)
 	return x;
 }
 
-// not this
-//#define bfe(i,k) i &(1 << k)
-
-// Kepler's shuffle tips and tricks
-template<typename T>
-__device__ 
-T warp_bitonic_sort(T x)
-{
-	const int laneId = get_lane_id();
-
-	x = swap<T>(x, 0x01, bfe(laneId, 1) ^ bfe(laneId,0));
-	x = swap<T>(x, 0x02, bfe(laneId, 2) ^ bfe(laneId,1));
-	x = swap<T>(x, 0x01, bfe(laneId, 2) ^ bfe(laneId,0));
-	x = swap<T>(x, 0x04, bfe(laneId, 3) ^ bfe(laneId,2));
-	x = swap<T>(x, 0x02, bfe(laneId, 3) ^ bfe(laneId,1));
-	x = swap<T>(x, 0x01, bfe(laneId, 3) ^ bfe(laneId,0));
-	x = swap<T>(x, 0x08, bfe(laneId, 4) ^ bfe(laneId,3));
-	x = swap<T>(x, 0x04, bfe(laneId, 4) ^ bfe(laneId,2));
-	x = swap<T>(x, 0x02, bfe(laneId, 4) ^ bfe(laneId,1));
-	x = swap<T>(x, 0x01, bfe(laneId, 4) ^ bfe(laneId,0));
-	x = swap<T>(x, 0x10, 		   bfe(laneId,4));
-	x = swap<T>(x, 0x08,  		   bfe(laneId,3));
-	x = swap<T>(x, 0x04,  		   bfe(laneId,2));
-	x = swap<T>(x, 0x02,  		   bfe(laneId,1));
-	x = swap<T>(x, 0x01,  		   bfe(laneId,0));
-
-	return x;
-}
-
-#define WARP_SIZE 32 
 
 template<typename T>
 __device__ 
@@ -136,279 +113,11 @@ T warp_readFromLane(T x, int lID)
 	return __shfl_sync(0xffffffff, x, lID);
 }
 
-__inline__ __device__
-int fake_shfl_down(int val, int offset, int width=32)
-{
-	static __shared__ int shared[512];
-	int lane = threadIdx.x % 32;
-	shared[threadIdx.x]=val;
-	__syncthreads();
-	val = (lane+offset<width)?shared[threadIdx.x + offset]:0;
-	__syncthreads();
-	return val;
-}
-
-//#define __shfl_down fake_shfl_down
-
-__inline__ __device__
-int fake_shfl_up(int val, int offset, int width=32)
-{
-	static __shared__ int shared[512];
-	int lane = threadIdx.x % 32;
-	shared[threadIdx.x]=val;
-	__syncthreads();
-	val = (lane-offset>0)?shared[threadIdx.x - offset]:0;
-	__syncthreads();
-	return val;
-}
-
-//#define __shfl_up fake_shfl_up
-
-/*__inline__ __device__
-int fake_shfl_down(int val, int offset, int width=32)
-{
-	static __shared__ int shared[512];
-	int lane = threadIdx.x % 32;
-	shared[threadIdx.x]=val;
-	__syncthreads();
-	val = (lane+offset<width)?shared[threadIdx.x + offset]:0;
-	__syncthreads();
-	return val;
-}*/
-
-//#define __shfl_down fake_shfl_down
-
-template<typename T>
-__device__ 
-T warp_reduce(T x)
-{
-
-	#pragma unroll
-	for( int offset = WARP_SIZE/2; offset > 0; offset >>= 1 )
-		x+= __shfl_down_sync(0xffffffff, x, offset);
-
-	return x;
-	
-}
 
 
 
-template<typename T>
-__device__ 
-T warp_all_reduce(T x)
-{
 
-	#pragma unroll
-	for( int offset = WARP_SIZE/2; offset > 0; offset >>= 1 )
-		x+= __shfl_xor_sync(0xffffffff, x, offset);
-
-	return x;
-}
-
-// Kepler's shuffle tips and tricks
-template<typename T>
-__device__ 
-T warp_scan(T x)
-{
-	unsigned int laneID = get_lane_id();
-	#pragma unroll
-	for( int offset = 0; offset < WARP_SIZE; offset <<= 1 )
-	{
-		T y = __shfl_up_sync(0xffffffff, x, offset);
-		if(  laneID >= offset )
-			x+= y;
-	}
-
-	return x;
-	
-}
-
-
-// devblogs.nvidia.com/faster-parallel-reductions-kepler
-template<typename T>
-inline __device__ 
-T block_reduce(T x)
-{
-	static __shared__ T shared[WARP_SIZE];
-	
-	unsigned int laneID = get_lane_id();//threadIdx.x % WARP_SIZE;
-	unsigned int warpID = get_warp_id();//threadIdx.x / WARP_SIZE;
-
-	x = warp_all_reduce<T>(x);
-
-	if( laneID == 0 )
-		shared[warpID] = x; 
-
-	__syncthreads();
-	
-	x = (threadIdx.x < blockDim.x / WARP_SIZE) ? shared[laneID] : 0;
-
-	if( warpID == 0)
-		x = warp_all_reduce<T>(x); // reduction within first warp
-
-	return x;	
-}
-
-
-
-// devblogs.nvidia.com/faster-parallel-reductions-kepler
-template<typename T>
-inline __device__ 
-T block_scan(T x)
-{
-	static __shared__ T shared[WARP_SIZE];
-	
-	unsigned int laneID = get_lane_id();//threadIdx.x % WARP_SIZE;
-	unsigned int warpID = get_warp_id();//threadIdx.x / WARP_SIZE;
-
-	x = warp_all_reduce<T>(x);
-
-
-
-	__syncthreads();
-	
-
-
-	return x;
-	
-}
-
-
-__global__ void device_reduce_block_atomic(float *in, float *out, int N)
-{
-	float sum = 0.0;
-	for(int i=blockIdx.x* blockDim.x + threadIdx.x; i < N; i+=blockDim.x*gridDim.x)
-	{
-	sum += in[i];
-	}
-	sum = block_reduce<float>(sum);
-	//if(threadIdx.x==0)
-	//	atomicAdd(out,sum);
-	if( blockIdx.x* blockDim.x + threadIdx.x < N )
-		out[blockIdx.x* blockDim.x + threadIdx.x]=sum;
-}
-
-/* Pasted from CUDA samples */
-////////////////////////////////////////////////////////////////////////////////
-// Selection sort used when depth gets too big or the number of elements drops
-// below a threshold.
-////////////////////////////////////////////////////////////////////////////////
-template< typename T >
-__device__ void selection_sort( T *data, int left, int right)
-{
-    for (int i = left ; i <= right ; ++i)
-    {
-        T min_val = data[i];
-        int min_idx = i;
-
-        // Find the smallest value in the range [left, right].
-        for (int j = i+1 ; j <= right ; ++j)
-        {
-            T val_j = data[j];
-
-            if (val_j < min_val)
-            {
-                min_idx = j;
-                min_val = val_j;
-            }
-        }
-
-        // Swap the values.
-        if (i != min_idx)
-        {
-            data[min_idx] = data[i];
-            data[i] = min_val;
-        }
-    }
-}
-/* end Pasted from CUDA samples */
-
-
-/*
-copyright: David Nash, all rights reserved
-*/
-__global__ void device_sort_warp(float *in, float *out, int N)
-{
-	// cuDa ve
-	int bi = blockIdx.x*blockDim.x;
-
-	static __shared__ float shared[WARP_SIZE];
-	
-	unsigned int laneID = get_lane_id();
-	unsigned int warpID = get_warp_id();
-
-	
-	for( int i = 0; i < WARP_SIZE; i++)
-	{
-		shared[laneID] = in[bi+warpID *WARP_SIZE + laneID];
-	}
-	__syncthreads();
-
-	//int left = warpID * WARP_SIZE;
-	//int right = warpID* WARP_SIZE + WARP_SIZE;
-	
-	selection_sort<float>(shared, 0, WARP_SIZE-1);
-
-	for( int i = 0; i < WARP_SIZE; i++)
-	{
-		out[bi+warpID *WARP_SIZE + laneID] =shared[laneID];
-	}
-	__syncthreads();	
-}
-
-/*
-copyright: David Nash, all rights reserved
-*/
-__global__ void device_sort_warp_2(float *in, float *out, int N)
-{
-	// cuDa ve
-	int bi = blockIdx.x*blockDim.x;
-
-	static __shared__ float shared[WARP_SIZE];
-	
-	unsigned int laneID = get_lane_id();
-	unsigned int warpID = get_warp_id();
-
-	
-	for( int i = 0; i < WARP_SIZE; i++)
-	{
-		shared[laneID] = in[bi+warpID *WARP_SIZE + laneID];
-	}
-	__syncthreads();
-
-	//int left = warpID * WARP_SIZE;
-	//int right = warpID* WARP_SIZE + WARP_SIZE;
-	
-	//selection_sort<float>(shared, 0, WARP_SIZE-1);
-	shared[laneID] = warp_bitonic_sort<float>(shared[laneID]);
-
-	for( int i = 0; i < WARP_SIZE; i++)
-	{
-		out[bi+warpID *WARP_SIZE + laneID] =shared[laneID];
-	}
-	__syncthreads();	
-}
-
-/*
-copyright: David Nash, all rights reserved
-*/
-__global__ void device_sort_warp_3(float *in, float *out, int N)
-{
-	// cuDa ve
-	int bi = blockIdx.x*blockDim.x;
-
-	//static __shared__ float shared[WARP_SIZE];
-	
-	unsigned int laneID = get_lane_id();
-	unsigned int warpID = get_warp_id();
-
-	// much faster
-	out[bi+warpID *WARP_SIZE + laneID] = warp_bitonic_sort<float>(in[bi+warpID *WARP_SIZE + laneID]);
-
-
-}
-
-
+// bitfield
  int SetBit( int dna,  int idx)
 {
 	dna |= (1<<idx);
@@ -439,6 +148,7 @@ struct Insect
 {
 	 int dna;
 	float fitness;
+	float sumFitness;
 	//unsigned int cross_selection;
 
 	__device__ void operator=(Insect &o){
@@ -447,38 +157,6 @@ struct Insect
 		//this->cross_selection = o.cross_selection;
 	}
 };
-
-/* Pasted from CUDA samples */
-////////////////////////////////////////////////////////////////////////////////
-// Modified to sort Insect's
-
-__device__ void selection_sort_insect( Insect *data, int left, int right)
-{
-    for (int i = left ; i <= right ; ++i)
-    {
-        Insect min_val = data[i];
-        int min_idx = i;
-
-        // Find the smallest value in the range [left, right].
-        for (int j = i+1 ; j <= right ; ++j)
-        {
-            Insect val_j = data[j];
-
-            if (val_j.fitness < min_val.fitness)
-            {
-                min_idx = j;
-                min_val = val_j;
-            }
-        }
-
-        // Swap the values.
-        if (i != min_idx)
-        {
-            data[min_idx] = data[i];
-            data[i] = min_val;
-        }
-    }
-}
 
 
 
@@ -489,8 +167,22 @@ void warp_insect_all_reduce(Insect shared[WARP_SIZE],int laneID)
 	#pragma unroll
 	for(unsigned int offset = WARP_SIZE/2; offset > 0; offset >>=1)
 	{
-		__syncthreads();
+		__syncwarp();
 		if( laneID < offset ) shared[laneID].fitness+=shared[laneID+offset].fitness;
+	}
+}
+
+__device__ 
+void warp_insect_all_reduce_2(Insect shared[WARP_SIZE],int laneID)
+{
+	shared[laneID].sumFitness =shared[laneID].fitness;
+
+	__syncwarp();
+	#pragma unroll
+	for(unsigned int offset = WARP_SIZE/2; offset > 0; offset >>=1)
+	{
+		__syncwarp();
+		if( laneID < offset ) shared[laneID].sumFitness += shared[laneID+offset].sumFitness;
 	}
 }
 
@@ -499,13 +191,15 @@ void warp_insect_all_reduce(Insect shared[WARP_SIZE],int laneID)
 __device__ 
 unsigned int warp_insect_scan(Insect mem[WARP_SIZE], unsigned int i)
 {
-	//#pragma unroll
+	mem[i].sumFitness =mem[i].fitness;
+	__syncwarp();
+	#pragma unroll
 	for( int offset = 1; offset < WARP_SIZE; offset <<= 1 )
 	{
-		float y = __shfl_up_sync(0xffffffff, mem[i].fitness, offset);
+		float y = __shfl_up_sync(0xffffffff, mem[i].sumFitness, offset);
 		if(  i >= offset )
 		{
-			mem[i].fitness += y;
+			mem[i].sumFitness += y;
 			//i += yidx;
 		}
 	}
@@ -562,10 +256,11 @@ void print_dna(int g)
 	}
 }
 
-#include <curand_kernel.h>
+
 
 
 // RNG init kernel
+// This is found in the Nvidia development guide
 __global__ void initRNG(curandState *const rngStates,
                         float *d_B)
 {
@@ -575,9 +270,14 @@ __global__ void initRNG(curandState *const rngStates,
     // Initialise the RNG d_B[tid]*4
     curand_init(4, tid, 0, &rngStates[tid]);
 }
-/* end Pasted from CUDA samples */
 
 
+
+/*
+Data collected for each warp
+This data is in the form 
+numThreads / WARP_SIZE
+*/
 struct warp_data
 {
 	//float warp_mean;
@@ -600,7 +300,7 @@ unsigned int thread_id;
 /*
 copyright: David Nash, all rights reserved
 */
-__global__ void fitness_samples(Insect *in, int target, Insect *out, curandState *const rngStates, int N, warp_data* wd,  int num_warps)
+__global__ void run_GA(Insect *in, int target, Insect *out, curandState *const rngStates, int N, warp_data* wd,  int num_warps)
 {
 	//curandState local_state;
 	//local_state = global_state[threadIdx.x];
@@ -608,9 +308,9 @@ __global__ void fitness_samples(Insect *in, int target, Insect *out, curandState
 	int bi = blockIdx.x*blockDim.x;
 
 	static __shared__ 
-	Insect shared[WARP_SIZE];
+	Insect shared[WARP_SIZE*2];
 	static __shared__	
-	Insect swap[WARP_SIZE];
+	Insect swap[WARP_SIZE*2];
 	
 	
 	
@@ -626,11 +326,19 @@ __global__ void fitness_samples(Insect *in, int target, Insect *out, curandState
     	curandState localState = rngStates[tid];
 	
 	float randomFloat = curand_uniform(&localState);
+	
+	in[tid].fitness = 0.0f;
+	in[tid].sumFitness = 0.0f;
 
 	shared[laneID] = in[tid];
+
+	/* Migrations */
+	/*if( (warpID > 0)  && laneID == 0 )
+		swap[laneID] = in[tid-1];*/
+
 	
 	// mutation
-	float mutationRate = 0.3;
+	float mutationRate = 0.7;
 	int dna =  shared[laneID].dna;
 	if( randomFloat < mutationRate )
 	{
@@ -652,8 +360,12 @@ __global__ void fitness_samples(Insect *in, int target, Insect *out, curandState
 	
 
 	// fitness score
+	// This could be performed using a separate kernel launch
+	// with threads bishifting loaded data by laneID (position in the warp)
+	// followed by a comparison to target (or evaluation function) 
 	unsigned int count[32] = {};
 	count[laneID] = 0;
+	
 	
 	for( int i = 0; i < 25; i++ )
 	{
@@ -673,16 +385,19 @@ __global__ void fitness_samples(Insect *in, int target, Insect *out, curandState
 		}
 	}
 	__syncwarp();
+
+	// compute fitness based on the accumulated samples
 	if( count[laneID] == 0 )
 	{ 
 		shared[laneID].fitness = 0.05f;
 	}
 	else
 	{
-		if( count[laneID] >=23 ) {
-		//printf("Finished in loop iteratons, block: %d, warp: %d, thread: %d", blockIdx.x, warpID, laneID);
-		wd[warpID].complete = 1010101010;
-		wd[warpID].dna = shared[laneID].dna;
+		if( count[laneID] >= 23 ) {
+			//printf("Finished in loop iteratons, block: %d, warp: %d, thread: %d", blockIdx.x, warpID, laneID);
+			shared[laneID].fitness = 10000000;
+			wd[warpID].complete = 1010101010;
+			wd[warpID].dna = shared[laneID].dna;
 		
 		}
 		else
@@ -698,22 +413,38 @@ __global__ void fitness_samples(Insect *in, int target, Insect *out, curandState
 
 	swap[laneID] = shared[newID];
 
-	//shared[laneID] = swap[laneID];
-
-	// finished with shared, so reduce it
 	__syncwarp();
-
-	warp_insect_all_reduce(shared, laneID);
-	//warp_insect_scan(shared, laneID);
+	
+	out[tid] = swap[laneID];
 
 	__syncwarp();
-	//if( laneID == 0 ) // power saving
-	float warp_Reduced=	wd[blockIdx.x*(blockDim.x/WARP_SIZE)  + warpID].warp_reduced = shared[0].fitness;//in[warpID+WARP_SIZE-1].fitness;
 
 	wd[blockIdx.x*(blockDim.x/WARP_SIZE) + warpID].warp_best = swap[WARP_SIZE-1];
 	
+	//warp_insect_all_reduce_2(swap, laneID);
+	warp_insect_scan(swap, laneID);
+	out[tid].sumFitness = swap[laneID].sumFitness;
+
+	__syncwarp();
+	//if( laneID == 0 ) // power saving
+	float warp_Reduced=	wd[blockIdx.x*(blockDim.x/WARP_SIZE)  + warpID].warp_reduced = swap[WARP_SIZE-1].sumFitness;
+
+	
 	// breeding
-	float breedingSelector = curand_uniform(&localState) * 32;
+
+	int FULLMASK = 0xffffffff;
+	int NEWMASK = FULLMASK << 24;
+	
+	/* Attempt to mask out the insects with low fitness 
+	 while cloning them 
+	*/
+	swap[laneID].dna = __shfl_sync(~NEWMASK, swap[laneID].dna, 15);
+
+
+	
+	
+
+	float breedingSelector = curand_uniform(&localState) * 31;
 
 	float cumulativeSum = 0.0f;
 	int crossover_selection = (int)breedingSelector;
@@ -731,9 +462,25 @@ __global__ void fitness_samples(Insect *in, int target, Insect *out, curandState
 
 	__syncwarp();*/
 
+	 
+
+	//NEWMASK = FULLMASK << 24;
+	crossover_selection = __shfl_sync(NEWMASK, laneID, 8);
+	
 	// cloning the best index
-	shared[laneID].dna = (swap[laneID].dna & 0xffff0000) | (swap[crossover_selection].dna & 0x0000ffff);
-	swap[laneID].dna = shared[laneID].dna;
+	int tempDNA = (swap[laneID].dna & (NEWMASK)) | (swap[crossover_selection].dna & (~NEWMASK));
+	__syncwarp();
+
+	swap[laneID].dna = tempDNA;
+	//swap[laneID].dna = shared[laneID].dna;
+
+/*migrations*/
+	if( laneID == 0 && warpID > 0)
+		swap[0] = wd[warpID-1].warp_best;
+
+	in[tid].dna = swap[laneID].dna;
+	in[tid].fitness = 0.0f;
+	in[tid].sumFitness = 0.0f;
 	
 
 
@@ -753,14 +500,14 @@ __global__ void fitness_samples(Insect *in, int target, Insect *out, curandState
 	
 
 
-	out[tid] = swap[laneID];
 	
-	in[tid] = out[tid];
+	
+	//in[tid] = out[tid];
 
-//__syncwarp();
+	//__syncwarp();
 
-//	swap[laneID].dna = 0;
-//	swap[laneID].fitness = 0.0f;
+	//in[tid]dna = 0;
+
 
 }
 
@@ -830,7 +577,10 @@ void memcpy_host_to_device(void* host, void* dev, size_t size)
 int main(void)
 {
 
+int FULLMASK = 0xffffffff;
 
+int test = FULLMASK << 24;
+	print_dna(test);
     insect_test(true);
 
   return 0;
@@ -877,58 +627,58 @@ int * SetAntennae( int *dna,  int choice)
 int * SetHead( int *dna, int choice)
 {
 	*dna |= (HEAD_MASK &(choice << head_start));
-return dna;
+	return dna;
 }
 int * SetWings( int *dna,  int choice)
 {
 	*dna |= (WINGS_MASK &(choice << wing_start));
-return dna;
+	return dna;
 }
  int * SetBody( int *dna,  int choice)
 {
 	*dna |= (BODY_MASK &(choice << body_start));
-return dna;
+	return dna;
 }
  int * SetFeet( int *dna,  int choice)
 {
 	*dna |= (FEET_MASK &(choice << feet_start));
-return dna;
+	return dna;
 }
  int * SetBodyColor( int *dna, int choice)
 {
 	*dna |= (BODY_COLOR_MASK &(choice << body_color_start));
-return dna;
+	return dna;
 }
 int * SetSize( int *dna, int choice)
 {
 	*dna |= (SIZE_MASK &(choice << size_start));
-return dna;
+	return dna;
 }
  int * SetHeadColor( int *dna,  int choice)
 {
 	*dna |= (HEAD_COLOR_MASK &(choice << head_color_start));
-return dna;
+	return dna;
 }
 
 void SetInsect(int* dna)
 {
- *dna = *SetAntennae( dna, 2);
-print_dna(*dna);
-printf("\n");
- *dna = *SetHead(dna, 4);
-print_dna(*dna);printf("\n");
- *dna = *SetWings( dna,34);
-print_dna(*dna);printf("\n");
- *dna = *SetBody( dna, 5);
-print_dna(*dna);printf("\n");
- *dna = *SetFeet( dna, 1);
-print_dna(*dna);printf("\n");
- *dna = *SetBodyColor( dna,3);
-print_dna(*dna);printf("\n");
- *dna = *SetSize( dna, 2);
-print_dna(*dna);printf("\n");
-*dna = *SetHeadColor( dna, 1);	
-print_dna(*dna);printf("\n");
+	*dna = *SetAntennae( dna, 2);
+	print_dna(*dna);
+	printf(", 0x%08x\n", dna);
+	 *dna = *SetHead(dna, 4);
+	print_dna(*dna);printf(", 0x%08x \n", dna);
+	 *dna = *SetWings( dna,34);
+	print_dna(*dna);printf(", 0x%08x\n", dna);
+	 *dna = *SetBody( dna, 5);
+	print_dna(*dna);printf(", 0x%08x\n", dna);
+	 *dna = *SetFeet( dna, 1);
+	print_dna(*dna);printf(", 0x%08x\n", dna);
+	 *dna = *SetBodyColor( dna,3);
+	print_dna(*dna);printf(", 0x%08x\n", dna);
+	 *dna = *SetSize( dna, 2);
+	print_dna(*dna);printf(", 0x%08x\n", dna);
+	*dna = *SetHeadColor( dna, 1);	
+	print_dna(*dna);printf(", 0x%08x\n", dna);printf("\n");
 	//return dna;
 }
 
@@ -972,7 +722,7 @@ size_t insect_size = sizeof(Insect)*numElements;
     for (int i = 0; i < numElements; ++i)
     {
         h_A[i].dna = (rand()/(float)RAND_MAX)*320;
-h_A[i].fitness = 0.0f;
+	h_A[i].fitness = 0.0f;
         h_B[i] = rand()/(float)RAND_MAX;
     }
 
@@ -1011,8 +761,8 @@ h_A[i].fitness = 0.0f;
 
 	// Launch the Vector Add CUDA Kernel
     	int threadsPerBlock = 256;
-    	//int blocksPerGrid =(numElements + threadsPerBlock - 1) / threadsPerBlock;
-	int blocksPerGrid =(numElements ) / threadsPerBlock;
+    	int blocksPerGrid =(numElements + threadsPerBlock - 1) / threadsPerBlock;
+	//int blocksPerGrid =(numElements ) / threadsPerBlock;
 
 	struct cudaFuncAttributes funcAttributes;
 
@@ -1081,10 +831,10 @@ h_A[i].fitness = 0.0f;
 
 	//	printf("\n");
 	//return dna;
-	print_dna(insect_dna);
+	//print_dna(insect_dna);
     
-
-    	for( int p = 0; p < 180; p++ )
+int p = 0;
+    	for( p = 0; p < 30; p++ )
 	{
 		cudaEvent_t start,stop;
     		cudaEventCreate(&start);
@@ -1096,7 +846,7 @@ h_A[i].fitness = 0.0f;
 
 		
 
-		fitness_samples<<<blocksPerGrid,threadsPerBlock>>>(d_A, insect_dna, d_C, d_rngStates, numElements, D_wd, numElements/32);
+		run_GA<<<blocksPerGrid,threadsPerBlock>>>(d_A, insect_dna, d_C, d_rngStates, numElements, D_wd, numElements/32);
 
 		cudaEventRecord(stop);
 		
@@ -1152,6 +902,8 @@ h_A[i].fitness = 0.0f;
 		}
 	}
 
+	printf("\ncompleted %d iterations \n", p);
+
 
     if (err != cudaSuccess)
     {
@@ -1170,7 +922,7 @@ h_A[i].fitness = 0.0f;
     }
 
    
-    if( false )
+    if( true )
     {
         // Verify that the result vector is correct
         for (int i = 1; i < numElements; ++i)
@@ -1183,15 +935,17 @@ h_A[i].fitness = 0.0f;
             }*/
 		//if(i%64==0)	print_dna( h_C[i].dna);printf("\n");
 		//if(i%64==0)	
-//printf("%f, ", (double)h_C[i].fitness);
+//printf("%f, ", (double)h_C[i].sumFitness);
 	}
 
 	for( int i = 0; i < numElements / 32; i++ )
 	{
-		printf("warp_reduced: %f, warp_best: %f, \n", wdH[i].warp_reduced, wdH[i].warp_best.fitness);
+		if( i%64 ==0)
+		{	printf("warp_reduced: %f, warp_best: %f, \n", wdH[i].warp_reduced, wdH[i].warp_best.fitness);
 				print_dna(wdH[i].warp_best.dna);
 				printf(" \n");
 				print_dna(insect_dna);printf(" \n");printf(" \n");
+		}
 	}
     }
 
