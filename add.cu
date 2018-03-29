@@ -481,7 +481,7 @@ void warp_insect_all_reduce(Insect shared[WARP_SIZE],int laneID)
 	#pragma unroll
 	for(unsigned int offset = WARP_SIZE/2; offset > 0; offset >>=1)
 	{
-		__syncthreads();
+		__syncwarp();
 		if( laneID < offset ) shared[laneID].fitness+=shared[laneID+offset].fitness;
 	}
 }
