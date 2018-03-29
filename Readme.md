@@ -4,7 +4,7 @@ An simple example designed to implement genetic algorithms in CUDA, see Requirem
    
 Currently broken. This can be compiled with 
 
->>    mvcc add.cu -lcurand_static -lculibos -o add_cuda -arch=sm_60
+>    nvcc add.cu -lcurand_static -lculibos -o add_cuda -arch=sm_60
 
 This compiles on Ubuntu 16.04 LTS, with latest cuda sdk and drivers. 
 
