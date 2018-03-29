@@ -408,28 +408,36 @@ __global__ void device_sort_warp_3(float *in, float *out, int N)
 
 }
 
-__forceinline__ __host__ __device__
-void SetBit(unsigned int &dna, unsigned int idx)
+
+ int SetBit( int dna,  int idx)
 {
 	dna |= (1<<idx);
+	return dna;
 }
 
 __forceinline__ __host__ __device__
-bool CheckBit(unsigned int dna, unsigned int idx)
+bool CheckBit( int dna,  int idx)
 {
 	return dna & (1<<idx);
 }
 
-__forceinline__ __host__ __device__
-void ResetBit(unsigned int &dna, unsigned int idx)
+
+bool CheckBit2( int dna,  int idx)
+{
+	return dna & (1<<idx);
+}
+
+
+ int ResetBit( int dna,  int idx)
 {
 	dna &= ~(1<<idx);
+	return dna;
 }
 
 
 struct Insect
 {
-	unsigned int dna;
+	 int dna;
 	float fitness;
 	//unsigned int cross_selection;
 
@@ -481,7 +489,7 @@ void warp_insect_all_reduce(Insect shared[WARP_SIZE],int laneID)
 	#pragma unroll
 	for(unsigned int offset = WARP_SIZE/2; offset > 0; offset >>=1)
 	{
-		__syncwarp();
+		__syncthreads();
 		if( laneID < offset ) shared[laneID].fitness+=shared[laneID+offset].fitness;
 	}
 }
@@ -545,11 +553,11 @@ unsigned int warp_bitonic_sort_insect(unsigned int x, Insect mem[32])
 }
 
 
-void print_dna(unsigned int g)
+void print_dna(int g)
 {
-	for( unsigned int i = 0 ; i < 32; i++)
+	for( int i = 0 ; i < 32; i++)
 	{
-		if(CheckBit(g,i))printf("1");
+		if(CheckBit2(g,i))printf("1");
 		else printf("0");
 	}
 }
@@ -584,7 +592,7 @@ struct ret_data
 bool complete;
 unsigned int warp_id;
 unsigned int thread_id;
-unsigned int dna;
+ int dna;
 };
 
 
@@ -592,7 +600,7 @@ unsigned int dna;
 /*
 copyright: David Nash, all rights reserved
 */
-__global__ void fitness_samples(Insect *in, unsigned int target, Insect *out, curandState *const rngStates, int N, warp_data* wd,  int num_warps)
+__global__ void fitness_samples(Insect *in, int target, Insect *out, curandState *const rngStates, int N, warp_data* wd,  int num_warps)
 {
 	//curandState local_state;
 	//local_state = global_state[threadIdx.x];
@@ -622,11 +630,11 @@ __global__ void fitness_samples(Insect *in, unsigned int target, Insect *out, cu
 	shared[laneID] = in[tid];
 	
 	// mutation
-	float mutationRate = 0.5;
-	unsigned int dna =  shared[laneID].dna;
+	float mutationRate = 0.3;
+	int dna =  shared[laneID].dna;
 	if( randomFloat < mutationRate )
 	{
-		unsigned int gene_to_mutate=(unsigned int)(curand_uniform(&localState))*25;
+		int gene_to_mutate=(int)(curand_uniform(&localState)*25);
 
 		if( dna &(1<<gene_to_mutate))
 		{
@@ -671,7 +679,7 @@ __global__ void fitness_samples(Insect *in, unsigned int target, Insect *out, cu
 	}
 	else
 	{
-		if( count[laneID] >=24 ) {
+		if( count[laneID] >=23 ) {
 		//printf("Finished in loop iteratons, block: %d, warp: %d, thread: %d", blockIdx.x, warpID, laneID);
 		wd[warpID].complete = 1010101010;
 		wd[warpID].dna = shared[laneID].dna;
@@ -679,7 +687,7 @@ __global__ void fitness_samples(Insect *in, unsigned int target, Insect *out, cu
 		}
 		else
 		{
-			shared[laneID].fitness = ((float)count[laneID]*count[laneID])/(25.0f);
+			shared[laneID].fitness = ((float)count[laneID])/(25.0f);
 		}
 	}
 
@@ -702,29 +710,29 @@ __global__ void fitness_samples(Insect *in, unsigned int target, Insect *out, cu
 	//if( laneID == 0 ) // power saving
 	float warp_Reduced=	wd[blockIdx.x*(blockDim.x/WARP_SIZE)  + warpID].warp_reduced = shared[0].fitness;//in[warpID+WARP_SIZE-1].fitness;
 
-	wd[blockIdx.x*(blockDim.x/WARP_SIZE) + warpID].warp_best = shared[WARP_SIZE-1];
+	wd[blockIdx.x*(blockDim.x/WARP_SIZE) + warpID].warp_best = swap[WARP_SIZE-1];
 	
 	// breeding
-	float breedingSelector = curand_uniform(&localState) * warp_Reduced*100;
+	float breedingSelector = curand_uniform(&localState) * 32;
 
 	float cumulativeSum = 0.0f;
-	int crossover_selection = 31;
-	for( int j = 1; j < 32; j++ )
+	int crossover_selection = (int)breedingSelector;
+	/*for( int j = 0; j < 31; j++ )
 	{
 		
-		if(breedingSelector > cumulativeSum && breedingSelector < cumulativeSum + swap[j].fitness*100)
+		if(breedingSelector > cumulativeSum && breedingSelector < cumulativeSum + swap[j].fitness)
 	  	{
 			crossover_selection = j;
 			
 			break;
 		}
-		else cumulativeSum += swap[j].fitness*100;
+		else cumulativeSum += swap[j].fitness;
 	}
 
-	__syncwarp();
+	__syncwarp();*/
 
 	// cloning the best index
-	shared[laneID].dna = (swap[laneID].dna & 0xffff0000) + (swap[crossover_selection].dna & 0x0000ffff);
+	shared[laneID].dna = (swap[laneID].dna & 0xffff0000) | (swap[crossover_selection].dna & 0x0000ffff);
 	swap[laneID].dna = shared[laneID].dna;
 	
 
@@ -830,88 +838,96 @@ int main(void)
 
 
 
-unsigned int ANTENNAE_MASK = 0;
-unsigned int HEAD_MASK = 0;
-unsigned int WINGS_MASK = 0;
-unsigned int BODY_MASK = 0;
-unsigned int FEET_MASK = 0;
-unsigned int BODY_COLOR_MASK = 0;
-unsigned int SIZE_MASK = 0;
-unsigned int HEAD_COLOR_MASK = 0;
+ int ANTENNAE_MASK = 0;
+ int HEAD_MASK = 0;
+ int WINGS_MASK = 0;
+ int BODY_MASK = 0;
+ int FEET_MASK = 0;
+ int BODY_COLOR_MASK = 0;
+ int SIZE_MASK = 0;
+ int HEAD_COLOR_MASK = 0;
 
-unsigned int antennae_start = 0;
-unsigned int head_start = 4;
-unsigned int wing_start = 6;
-unsigned int body_start = 10;
-unsigned int feet_start = 16;
-unsigned int body_color_start = 17;
-unsigned int size_start = 20;
-unsigned int head_color_start = 22;
-unsigned int head_color_end = 25;
+ int antennae_start = 0;
+ int head_start = 4;
+ int wing_start = 6;
+ int body_start = 10;
+ int feet_start = 16;
+ int body_color_start = 17;
+ int size_start = 20;
+ int head_color_start = 22;
+ int head_color_end = 25;
 
 void ComputeMasks()
 {
-	for(unsigned int i = antennae_start; i < head_start; i++) SetBit(ANTENNAE_MASK,i);
-	for(unsigned int i = head_start; i < wing_start; i++) SetBit(HEAD_MASK,i);
-	for(unsigned int i = wing_start; i < body_start; i++) SetBit(WINGS_MASK,i);
-	for(unsigned int i = body_start; i < feet_start; i++) SetBit(BODY_MASK,i);
-	for(unsigned int i = feet_start; i < body_color_start; i++) SetBit(FEET_MASK,i);
-	for(unsigned int i = body_color_start; i < size_start; i++) SetBit(BODY_COLOR_MASK,i);
-	for(unsigned int i = size_start; i < head_color_start; i++) SetBit(SIZE_MASK,i);
-	for(unsigned int i = head_color_start; i < head_color_end; i++) SetBit(HEAD_COLOR_MASK,i);
+	for( int i = antennae_start; i < head_start; i++) ANTENNAE_MASK |=SetBit(ANTENNAE_MASK,i);
+	for( int i = head_start; i < wing_start; i++) HEAD_MASK|=SetBit(HEAD_MASK,i);
+	for( int i = wing_start; i < body_start; i++) WINGS_MASK|=SetBit(WINGS_MASK,i);
+	for( int i = body_start; i < feet_start; i++) BODY_MASK|=SetBit(BODY_MASK,i);
+	for( int i = feet_start; i < body_color_start; i++) FEET_MASK|=SetBit(FEET_MASK,i);
+	for( int i = body_color_start; i < size_start; i++) BODY_COLOR_MASK|=SetBit(BODY_COLOR_MASK,i);
+	for( int i = size_start; i < head_color_start; i++) SIZE_MASK|=SetBit(SIZE_MASK,i);
+	for( int i = head_color_start; i < head_color_end; i++) HEAD_COLOR_MASK|=SetBit(HEAD_COLOR_MASK,i);
 }
 
-void SetAntennae(unsigned int *dna,unsigned  int choice)
+int * SetAntennae( int *dna,  int choice)
 {
 	*dna |= (ANTENNAE_MASK &(choice) ) ;
+	return dna;
 }
-void SetHead(unsigned int *dna, unsigned int choice)
+int * SetHead( int *dna, int choice)
 {
-	*dna |= (HEAD_MASK &(choice));
+	*dna |= (HEAD_MASK &(choice << head_start));
+return dna;
 }
-void SetWings(unsigned int *dna,unsigned  int choice)
+int * SetWings( int *dna,  int choice)
 {
-	*dna |= (WINGS_MASK &(choice));
+	*dna |= (WINGS_MASK &(choice << wing_start));
+return dna;
 }
-void SetBody(unsigned int *dna,unsigned  int choice)
+ int * SetBody( int *dna,  int choice)
 {
-	*dna |= (BODY_MASK &(choice));
+	*dna |= (BODY_MASK &(choice << body_start));
+return dna;
 }
-void SetFeet(unsigned int *dna,unsigned  int choice)
+ int * SetFeet( int *dna,  int choice)
 {
-	*dna |= (FEET_MASK &(choice));
+	*dna |= (FEET_MASK &(choice << feet_start));
+return dna;
 }
-void SetBodyColor(unsigned int *dna, unsigned int choice)
+ int * SetBodyColor( int *dna, int choice)
 {
-	*dna |= (BODY_COLOR_MASK &(choice));
+	*dna |= (BODY_COLOR_MASK &(choice << body_color_start));
+return dna;
 }
-void SetSize(unsigned int *dna, unsigned int choice)
+int * SetSize( int *dna, int choice)
 {
-	*dna |= (SIZE_MASK &(choice));
+	*dna |= (SIZE_MASK &(choice << size_start));
+return dna;
 }
-void SetHeadColor(unsigned int *dna,unsigned  int choice)
+ int * SetHeadColor( int *dna,  int choice)
 {
-	*dna |= (HEAD_COLOR_MASK &(choice));
+	*dna |= (HEAD_COLOR_MASK &(choice << head_color_start));
+return dna;
 }
 
-void SetInsect(unsigned int* dna)
+void SetInsect(int* dna)
 {
- SetAntennae( dna, 2);
+ *dna = *SetAntennae( dna, 2);
 print_dna(*dna);
 printf("\n");
- SetHead(dna, 4);
+ *dna = *SetHead(dna, 4);
 print_dna(*dna);printf("\n");
- SetWings( dna,34);
+ *dna = *SetWings( dna,34);
 print_dna(*dna);printf("\n");
- SetBody( dna, 5);
+ *dna = *SetBody( dna, 5);
 print_dna(*dna);printf("\n");
- SetFeet( dna, 1);
+ *dna = *SetFeet( dna, 1);
 print_dna(*dna);printf("\n");
- SetBodyColor( dna,3);
+ *dna = *SetBodyColor( dna,3);
 print_dna(*dna);printf("\n");
- SetSize( dna, 2);
+ *dna = *SetSize( dna, 2);
 print_dna(*dna);printf("\n");
-SetHeadColor( dna, 1);	
+*dna = *SetHeadColor( dna, 1);	
 print_dna(*dna);printf("\n");
 	//return dna;
 }
@@ -922,6 +938,8 @@ print_dna(*dna);printf("\n");
 int
 insect_test(bool b_verify)
 {
+
+ComputeMasks();
     // Error code to check return values for CUDA calls
     cudaError_t err = cudaSuccess;
 
@@ -1032,9 +1050,9 @@ h_A[i].fitness = 0.0f;
     	// Initialise RNG
     	initRNG<<<blocksPerGrid, threadsPerBlock>>>(d_rngStates, d_B);
 
-	unsigned int insect_dna = 0;
+	 int insect_dna = 0;
 
-	ComputeMasks();
+	
 	SetInsect(&insect_dna);
 
 
@@ -1061,17 +1079,19 @@ h_A[i].fitness = 0.0f;
         	exit(EXIT_FAILURE); 
     	}*/
 
+	//	printf("\n");
+	//return dna;
 	print_dna(insect_dna);
     
 
-    	for( int p = 0; p < 50; p++ )
+    	for( int p = 0; p < 180; p++ )
 	{
 		cudaEvent_t start,stop;
     		cudaEventCreate(&start);
     		cudaEventCreate(&stop);
 
     		cudaEventRecord(start);
-    		printf("CUDA kernel launch with %d blocks of %d threads\n", blocksPerGrid, threadsPerBlock);
+    		//printf("CUDA kernel launch with %d blocks of %d threads\n", blocksPerGrid, threadsPerBlock);
 
 
 		
@@ -1080,7 +1100,7 @@ h_A[i].fitness = 0.0f;
 
 		cudaEventRecord(stop);
 		
-		printf("Copy output data from the CUDA device to the host memory\n");
+		//printf("Copy output data from the CUDA device to the host memory\n");
     		err = cudaMemcpy(wdH, D_wd, sizeof(warp_data)*numElements / 32, cudaMemcpyDeviceToHost);
     		if (err != cudaSuccess)
     		{
@@ -1096,14 +1116,14 @@ h_A[i].fitness = 0.0f;
     		float milliseconds = 0;
     		cudaEventElapsedTime(&milliseconds, start, stop);
 
-    		// size in bytes * 3 memory accesses, 2 retrieve, one store (unit converted)
+    		/*// size in bytes * 3 memory accesses, 2 retrieve, one store (unit converted)
     		printf("Effective Bandwidth (GB/s): %f\n", insect_size * 32 / milliseconds / 1e6 );  
 
     		// one floating point operation (add) * numElements (unit converted)
     		printf("Throughput (GFLOPS): %f\n", 5*numElements / milliseconds / 1e6 );  
 
     		printf( "Time Elapsed (ms): %f\n", milliseconds);
-
+		*/
     		err = cudaGetLastError();
 
 		bool target_reached = false;
@@ -1169,6 +1189,9 @@ h_A[i].fitness = 0.0f;
 	for( int i = 0; i < numElements / 32; i++ )
 	{
 		printf("warp_reduced: %f, warp_best: %f, \n", wdH[i].warp_reduced, wdH[i].warp_best.fitness);
+				print_dna(wdH[i].warp_best.dna);
+				printf(" \n");
+				print_dna(insect_dna);printf(" \n");printf(" \n");
 	}
     }
 
