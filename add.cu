@@ -440,16 +440,13 @@ __global__ void run_GA(Insect *in, int target, Insect *out, curandState *const r
 	swap[laneID] = shared[newID];
 
 	__syncwarp();
-	
-	out[tid] = swap[laneID];
-
-	__syncwarp();
 
 	_warp_data.warp_best = swap[WARP_SIZE-1];
 	
-	//warp_insect_all_reduce_2(swap, laneID);
+	// perform scan operation for roulette wheel mating selection
 	warp_insect_scan(swap, laneID);
 
+	// store this in local memory now, then write to global memory at end of kernel
 	Insect this_insect = swap[laneID];
 
 	
@@ -463,19 +460,11 @@ __global__ void run_GA(Insect *in, int target, Insect *out, curandState *const r
 
 	int FULLMASK = 0xffffffff;
 	int NEWMASK = FULLMASK << 24;
-	
-	
-
-
-	
-	
-
-
 
 
 	 
 	// can perform a different test for each warp.
-	if( warpID % WARPS_PER_BLOCK ==0)
+	if( warpID % WARPS_PER_BLOCK < WARP_SIZE / 2) // currently competitive with roulette wheel
 	{
 		/* Attempt to mask out the insects with low fitness 
 		 while cloning  
@@ -483,14 +472,14 @@ __global__ void run_GA(Insect *in, int target, Insect *out, curandState *const r
 		this should copy the top 8 insects over the rest by selecting memory at offset laneID % 8 + 24 
 		
 		*/
-		float breedingSelector = curand_uniform(&localState) * warp_Reduced;
+		float breedingSelector = curand_uniform(&localState) * 31;
 
 
 		int crossover_selection = (int)breedingSelector;
 
 		swap[laneID].dna = __shfl_sync(~NEWMASK, swap[laneID].dna, (laneID % 8 + 24));
 
-		crossover_selection = __shfl_sync(NEWMASK, laneID-1, (laneID % 8 + 24));
+		//crossover_selection = __shfl_sync(NEWMASK, laneID-1, (laneID % 8 + 24));
 	
 		// cloning the best index
 		NEWMASK = FULLMASK << 16;
@@ -530,7 +519,7 @@ __global__ void run_GA(Insect *in, int target, Insect *out, curandState *const r
 			if( swap[TESTER -1].sumFitness*swap[TESTER -1].sumFitness >  breedingSelector ) TESTER -= INCREMENT;
 			else if( swap[TESTER].sumFitness*swap[TESTER].sumFitness <=  breedingSelector ) TESTER += INCREMENT;
 		}
-		crossover_selection = TESTER; // 1/32 probability of cloning, represented proportional to fitness
+		crossover_selection = TESTER; 
 		
 		NEWMASK = FULLMASK << 16; // swap at 50%
 		int tempDNA = (swap[laneID].dna & (NEWMASK)) | (swap[crossover_selection].dna & (~NEWMASK));
