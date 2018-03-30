@@ -476,7 +476,7 @@ __global__ void run_GA(Insect *in, int target, Insect *out, curandState *const r
 
 	 
 	// can perform a different test for each warp.
-	if( warpID > N / 2)
+	if( warpID % WARPS_PER_BLOCK ==0 )
 	{
 		/* Attempt to mask out the insects with low fitness 
 		 while cloning  
@@ -499,7 +499,6 @@ __global__ void run_GA(Insect *in, int target, Insect *out, curandState *const r
 	}
 	else
 	{
-
 		swap[laneID].dna = __shfl_sync(~NEWMASK, swap[laneID].dna, (laneID % 8 + 24));
 
 		int TESTER = WARP_SIZE / 2;
