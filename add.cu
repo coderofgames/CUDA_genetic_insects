@@ -363,7 +363,7 @@ __global__ void run_GA(Insect *in, int target, Insect *out, curandState *const r
 
 	
 	// mutation
-	float mutationRate = 0.7;
+	float mutationRate = 0.01 *(1 + warpID) ; // this seems to make later warps perform better
 	int dna =  shared[laneID].dna;
 	if( randomFloat < mutationRate )
 	{
@@ -450,7 +450,9 @@ __global__ void run_GA(Insect *in, int target, Insect *out, curandState *const r
 	//warp_insect_all_reduce_2(swap, laneID);
 	warp_insect_scan(swap, laneID);
 
-	out[tid].sumFitness = swap[laneID].sumFitness;
+	Insect this_insect = swap[laneID];
+
+	
 
 	__syncwarp();
 	//if( laneID == 0 ) // power saving
@@ -468,15 +470,12 @@ __global__ void run_GA(Insect *in, int target, Insect *out, curandState *const r
 	
 	
 
-	float breedingSelector = curand_uniform(&localState) * 31;
 
-
-	int crossover_selection = (int)breedingSelector;
 
 
 	 
 	// can perform a different test for each warp.
-	if( warpID % WARPS_PER_BLOCK ==0 )
+	if( warpID % WARPS_PER_BLOCK ==0)
 	{
 		/* Attempt to mask out the insects with low fitness 
 		 while cloning  
@@ -484,9 +483,14 @@ __global__ void run_GA(Insect *in, int target, Insect *out, curandState *const r
 		this should copy the top 8 insects over the rest by selecting memory at offset laneID % 8 + 24 
 		
 		*/
+		float breedingSelector = curand_uniform(&localState) * warp_Reduced;
+
+
+		int crossover_selection = (int)breedingSelector;
+
 		swap[laneID].dna = __shfl_sync(~NEWMASK, swap[laneID].dna, (laneID % 8 + 24));
 
-		crossover_selection = __shfl_sync(NEWMASK, laneID, 8);
+		crossover_selection = __shfl_sync(NEWMASK, laneID-1, (laneID % 8 + 24));
 	
 		// cloning the best index
 		NEWMASK = FULLMASK << 16;
@@ -499,7 +503,16 @@ __global__ void run_GA(Insect *in, int target, Insect *out, curandState *const r
 	}
 	else
 	{
-		swap[laneID].dna = __shfl_sync(~NEWMASK, swap[laneID].dna, (laneID % 8 + 24));
+
+		float breedingSelector = curand_uniform(&localState) * warp_Reduced;
+		breedingSelector *= breedingSelector;
+
+
+		int crossover_selection = (int)breedingSelector;
+
+		//NEWMASK = FULLMASK << 8; // swap at 50%
+
+		//swap[laneID].dna = __shfl_sync(~NEWMASK, swap[laneID].dna, (laneID % 8 + 24));
 
 		int TESTER = WARP_SIZE / 2;
 		
@@ -514,8 +527,8 @@ __global__ void run_GA(Insect *in, int target, Insect *out, curandState *const r
 		
 		for( int INCREMENT = TESTER/2; INCREMENT > 0; INCREMENT /=2 )
 		{
-			if( swap[TESTER -1].sumFitness >  breedingSelector ) TESTER -= INCREMENT;
-			else if( swap[TESTER].sumFitness <=  breedingSelector ) TESTER += INCREMENT;
+			if( swap[TESTER -1].sumFitness*swap[TESTER -1].sumFitness >  breedingSelector ) TESTER -= INCREMENT;
+			else if( swap[TESTER].sumFitness*swap[TESTER].sumFitness <=  breedingSelector ) TESTER += INCREMENT;
 		}
 		crossover_selection = TESTER; // 1/32 probability of cloning, represented proportional to fitness
 		
@@ -535,6 +548,11 @@ __global__ void run_GA(Insect *in, int target, Insect *out, curandState *const r
 		/*migrations*/
 	if( laneID == 0 && warpID % WARPS_PER_BLOCK > 0  )
 		swap[0] = wd[warpID-1].warp_best;
+
+	__syncthreads();
+
+	
+	out[tid] = this_insect;
 
 	in[tid].dna = swap[laneID].dna;
 	in[tid].fitness = 0.0f;
@@ -910,10 +928,11 @@ size_t insect_size = sizeof(Insect)*numElements;
 			if( wdH[i].complete == 1010101010 )
 			{
 				target_reached = true;
-				printf("TARGET_REACHED, warp_reduced: %f, warp_best: %f, found at block ; %d, warp: %d \n\n", wdH[i].warp_reduced, wdH[i].warp_best.fitness, wdH[i].blockIdx, wdH[i].warpId % warps_per_block );
-				
+				printf("TARGET_REACHED\n------------------------------\n");
+				printf("found at block ; %d, warp: %d \n\n", wdH[i].warp_reduced, wdH[i].warp_best.fitness, wdH[i].blockIdx, wdH[i].warpId % warps_per_block );
+				printf("Insect: ");
 				print_dna(wdH[i].dna);
-				printf(" \n");
+				printf(" \nTarget: ");
 				print_dna(insect_dna);
 				break;
 			}
@@ -959,7 +978,7 @@ size_t insect_size = sizeof(Insect)*numElements;
 
 	    // Copy the device result vector in device memory to the host result vector
 	    // in host memory.
-	    printf("Copy output data from the CUDA device to the host memory\n");
+	    printf("Copy output data from the CUDA device to the host memory, this should be stored in a texture for larger experiements\n");
 	    err = cudaMemcpy(h_C, d_C, insect_size, cudaMemcpyDeviceToHost);
 	    if (err != cudaSuccess)
 	    {
@@ -989,7 +1008,7 @@ size_t insect_size = sizeof(Insect)*numElements;
 		}
 	    }
 
-	printf("\nh_C[0]: %f\n, ", h_C[0].fitness);
+
 
     printf("Test PASSED\n");
 
