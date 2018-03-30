@@ -316,6 +316,7 @@ copyright: David Nash, all rights reserved
 */
 __global__ void run_GA(Insect *in, int target, Insect *out, curandState *const rngStates, int N, warp_data* wd,  int num_warps)
 {
+	
 	//curandState local_state;
 	//local_state = global_state[threadIdx.x];
 	// cuDa ve
@@ -336,7 +337,7 @@ __global__ void run_GA(Insect *in, int target, Insect *out, curandState *const r
 
 	unsigned int tid = bi+threadIdx.x;
 
-	
+	unsigned int WARPS_PER_BLOCK = blockDim.x / WARP_SIZE;	
 
 	    // Initialise the RNG
     	curandState localState = rngStates[tid];
@@ -350,7 +351,7 @@ __global__ void run_GA(Insect *in, int target, Insect *out, curandState *const r
 	// load global data to shared
 
 	shared[laneID] = in[tid];
-	_warp_data = wd[blockIdx.x*(blockDim.x/WARP_SIZE)  + warpID];
+	_warp_data = wd[ warpID];
 
 	_warp_data.blockIdx = blockIdx.x;
 	_warp_data.warpId = warpID;
@@ -387,8 +388,8 @@ __global__ void run_GA(Insect *in, int target, Insect *out, curandState *const r
 	// This could be performed using a separate kernel launch
 	// with threads bishifting loaded data by laneID (position in the warp)
 	// followed by a comparison to target (or evaluation function) 
-	unsigned int count[32] = {};
-	count[laneID] = 0;
+	unsigned int count = 0;//{};
+	//count[laneID] = 0;
 	
 	
 	for( int i = 0; i < 25; i++ )
@@ -397,27 +398,27 @@ __global__ void run_GA(Insect *in, int target, Insect *out, curandState *const r
 		{
 			if( CheckBit(target, i))
 			{
-				count[laneID]++;
+				count++;
 			}
 		}
 		else
 		{
 			if( !CheckBit(target, i))
 			{
-				count[laneID]++;
+				count++;
 			}
 		}
 	}
 	__syncwarp();
 
 	// compute fitness based on the accumulated samples
-	if( count[laneID] == 0 )
+	if( count == 0 )
 	{ 
 		shared[laneID].fitness = 0.05f;
 	}
 	else
 	{
-		if( count[laneID] >= 24 ) {
+		if( count == 25 ) {
 			//printf("Finished in loop iteratons, block: %d, warp: %d, thread: %d", blockIdx.x, warpID, laneID);
 			shared[laneID].fitness = 10000000;
 
@@ -427,7 +428,7 @@ __global__ void run_GA(Insect *in, int target, Insect *out, curandState *const r
 		}
 		else
 		{
-			shared[laneID].fitness = ((float)count[laneID])/(25.0f);
+			shared[laneID].fitness = ((float)count)/(25.0f);
 		}
 	}
 
@@ -461,10 +462,7 @@ __global__ void run_GA(Insect *in, int target, Insect *out, curandState *const r
 	int FULLMASK = 0xffffffff;
 	int NEWMASK = FULLMASK << 24;
 	
-	/* Attempt to mask out the insects with low fitness 
-	 while cloning them 
-	*/
-	swap[laneID].dna = __shfl_sync(~NEWMASK, swap[laneID].dna, (laneID % 8 + 24));
+	
 
 
 	
@@ -474,24 +472,20 @@ __global__ void run_GA(Insect *in, int target, Insect *out, curandState *const r
 
 
 	int crossover_selection = (int)breedingSelector;
-	/*for( int j = 0; j < 31; j++ )
-	{
-		
-		if(breedingSelector > cumulativeSum && breedingSelector < cumulativeSum + swap[j].fitness)
-	  	{
-			crossover_selection = j;
-			
-			break;
-		}
-		else cumulativeSum += swap[j].fitness;
-	}
 
-	__syncwarp();*/
 
 	 
 	// can perform a different test for each warp.
-	if( warpID < 4 )
+	if( warpID > N / 2)
 	{
+		/* Attempt to mask out the insects with low fitness 
+		 while cloning  
+		
+		this should copy the top 8 insects over the rest by selecting memory at offset laneID % 8 + 24 
+		
+		*/
+		swap[laneID].dna = __shfl_sync(~NEWMASK, swap[laneID].dna, (laneID % 8 + 24));
+
 		crossover_selection = __shfl_sync(NEWMASK, laneID, 8);
 	
 		// cloning the best index
@@ -505,6 +499,8 @@ __global__ void run_GA(Insect *in, int target, Insect *out, curandState *const r
 	}
 	else
 	{
+
+		swap[laneID].dna = __shfl_sync(~NEWMASK, swap[laneID].dna, (laneID % 8 + 24));
 
 		int TESTER = WARP_SIZE / 2;
 		
@@ -531,19 +527,21 @@ __global__ void run_GA(Insect *in, int target, Insect *out, curandState *const r
 
 		swap[laneID].dna = tempDNA;
 	}
+
+	wd[ warpID] = _warp_data;
 	
-	__syncthreads();
+	
 
 
 		/*migrations*/
-	if( laneID == 0 && warpID > 0)
-		swap[0] = _warp_data.warp_best;
+	if( laneID == 0 && warpID % WARPS_PER_BLOCK > 0  )
+		swap[0] = wd[warpID-1].warp_best;
 
 	in[tid].dna = swap[laneID].dna;
 	in[tid].fitness = 0.0f;
 	in[tid].sumFitness = 0.0f;
 
-	wd[blockIdx.x*(blockDim.x/WARP_SIZE)  + warpID] = _warp_data;
+	
 	
 	
 
@@ -760,7 +758,12 @@ ComputeMasks();
 
 
     // Print the vector length to be used, and compute its size
+	
     int numElements = 32768;
+  	int threadsPerBlock = 128; // optimized for SM running 128 threads or 4 warps simultaneously
+	int warps_per_block = threadsPerBlock / 32;
+    	int blocksPerGrid =(numElements + threadsPerBlock - 1) / threadsPerBlock;
+
     size_t size = numElements * sizeof(float);
 	size_t size_int = numElements * sizeof(int);
 
@@ -824,8 +827,7 @@ size_t insect_size = sizeof(Insect)*numElements;
 
 
 	// Launch the Vector Add CUDA Kernel
-    	int threadsPerBlock = 256;
-    	int blocksPerGrid =(numElements + threadsPerBlock - 1) / threadsPerBlock;
+  
 	//int blocksPerGrid =(numElements ) / threadsPerBlock;
 
 	struct cudaFuncAttributes funcAttributes;
@@ -870,41 +872,18 @@ size_t insect_size = sizeof(Insect)*numElements;
 	SetInsect(&insect_dna);
 
 
-	/*ret_data *h_ret = (ret_data*)malloc(sizeof(ret_data));
-	h_ret->complete = false;
-	h_ret->warp_id = 0;
-	h_ret->thread_id = 0;
-	h_ret->dna = 0;
 
-	ret_data *d_ret = 0;
 
-	err = cudaMalloc((void **)&d_ret, sizeof(ret_data));
-
-    	if (err != cudaSuccess)
-    	{
-        	printf("Failed to cudamalloc a ret_data ");
-        	exit(EXIT_FAILURE); 
-    	}
-
-	err = cudaMemcpy(h_ret, d_ret,  sizeof(ret_data), cudaMemcpyHostToDevice);
-    	if (err != cudaSuccess)
-    	{
-        	printf("Could not allocate memory on device for results: ");
-        	exit(EXIT_FAILURE); 
-    	}*/
-
-	//	printf("\n");
-	//return dna;
-	//print_dna(insect_dna);
-    
-int p = 0;
-    	for( p = 0; p < 30; p++ )
-	{
-		cudaEvent_t start,stop;
+	cudaEvent_t start,stop;
     		cudaEventCreate(&start);
     		cudaEventCreate(&stop);
 
     		cudaEventRecord(start);
+    
+	int p = 0;
+    	for( p = 0; p < 30; p++ )
+	{
+	
     		//printf("CUDA kernel launch with %d blocks of %d threads\n", blocksPerGrid, threadsPerBlock);
 
 
@@ -912,7 +891,7 @@ int p = 0;
 
 		run_GA<<<blocksPerGrid,threadsPerBlock>>>(d_A, insect_dna, d_C, d_rngStates, numElements, D_wd, numElements/32);
 
-		cudaEventRecord(stop);
+	
 		
 		//printf("Copy output data from the CUDA device to the host memory\n");
     		err = cudaMemcpy(wdH, D_wd, sizeof(warp_data)*numElements / 32, cudaMemcpyDeviceToHost);
@@ -923,22 +902,7 @@ int p = 0;
     		}
     		
 
-
-
-	    	cudaEventSynchronize(stop);
-
-    		float milliseconds = 0;
-    		cudaEventElapsedTime(&milliseconds, start, stop);
-
-    		/*// size in bytes * 3 memory accesses, 2 retrieve, one store (unit converted)
-    		printf("Effective Bandwidth (GB/s): %f\n", insect_size * 32 / milliseconds / 1e6 );  
-
-    		// one floating point operation (add) * numElements (unit converted)
-    		printf("Throughput (GFLOPS): %f\n", 5*numElements / milliseconds / 1e6 );  
-
-    		printf( "Time Elapsed (ms): %f\n", milliseconds);
-		*/
-    		err = cudaGetLastError();
+	
 
 		bool target_reached = false;
 
@@ -947,9 +911,9 @@ int p = 0;
 			if( wdH[i].complete == 1010101010 )
 			{
 				target_reached = true;
-				printf("TARGET_REACHED, warp_reduced: %f, warp_best: %f, found at block ; %d, warp: %d \n", wdH[i].warp_reduced, wdH[i].warp_best.fitness, wdH[i].blockIdx, wdH[i].warpId % 8 );
+				printf("TARGET_REACHED, warp_reduced: %f, warp_best: %f, found at block ; %d, warp: %d \n\n", wdH[i].warp_reduced, wdH[i].warp_best.fitness, wdH[i].blockIdx, wdH[i].warpId % warps_per_block );
 				
-				print_dna(wdH[i].warp_best.dna);
+				print_dna(wdH[i].dna);
 				printf(" \n");
 				print_dna(insect_dna);
 				break;
@@ -961,59 +925,72 @@ int p = 0;
 
 
 		{
-			printf("\n\n Target Reached at iteration %d", p);
+			printf("\n\n Target Reached at iteration %d\n", p);
 			break;
 		}
 	}
 
+		cudaEventRecord(stop);
+
+	    	cudaEventSynchronize(stop);
+
+    		float milliseconds = 0;
+    		cudaEventElapsedTime(&milliseconds, start, stop);
+
+		// Mark Harris tutoral
+
+    		/*// size in bytes * 3 memory accesses, 2 retrieve, one store (unit converted)
+    		printf("Effective Bandwidth (GB/s): %f\n", insect_size * 32 / milliseconds / 1e6 );  
+
+    		// one floating point operation (add) * numElements (unit converted)
+    		printf("Throughput (GFLOPS): %f\n", 5*numElements / milliseconds / 1e6 );  
+*/
+    		printf( "Time Elapsed (ms): %f\n", milliseconds);
+		
+    		err = cudaGetLastError();
+
 	printf("\ncompleted %d iterations \n", p);
 
 
-    if (err != cudaSuccess)
-    {
-        fprintf(stderr, "Failed to launch vectorAdd kernel (error code %s)!\n", cudaGetErrorString(err));
-        exit(EXIT_FAILURE);
-    }
+	    if (err != cudaSuccess)
+	    {
+		fprintf(stderr, "Failed to launch vectorAdd kernel (error code %s)!\n", cudaGetErrorString(err));
+		exit(EXIT_FAILURE);
+	    }
 
-    // Copy the device result vector in device memory to the host result vector
-    // in host memory.
-    printf("Copy output data from the CUDA device to the host memory\n");
-    err = cudaMemcpy(h_C, d_C, insect_size, cudaMemcpyDeviceToHost);
-    if (err != cudaSuccess)
-    {
-        fprintf(stderr, "Failed to copy vector C from device to host (error code %s)!\n", cudaGetErrorString(err));
-        exit(EXIT_FAILURE);
-    }
+	    // Copy the device result vector in device memory to the host result vector
+	    // in host memory.
+	    printf("Copy output data from the CUDA device to the host memory\n");
+	    err = cudaMemcpy(h_C, d_C, insect_size, cudaMemcpyDeviceToHost);
+	    if (err != cudaSuccess)
+	    {
+		fprintf(stderr, "Failed to copy vector C from device to host (error code %s)!\n", cudaGetErrorString(err));
+		exit(EXIT_FAILURE);
+	    }
 
-   
-    if( false )
-    {
-        // Verify that the result vector is correct
-        for (int i = 1; i < numElements; ++i)
-        {
-          //  if (fabs(h_A[i] + h_B[i] - h_C[i]) > 1e-5)
-		/*if( h_C[i] < h_C[i-1] )
-            {
-                fprintf(stderr, "Result verification failed at element %d!\n", i);
-                exit(EXIT_FAILURE);
-            }*/
-		//if(i%64==0)	print_dna( h_C[i].dna);printf("\n");
-		//if(i%64==0)	
-//printf("%f, ", (double)h_C[i].sumFitness);
-	}
-
-	for( int i = 0; i < numElements / 32; i++ )
-	{
-		if( i%64 ==0)
-		{	printf("warp_reduced: %f, warp_best: %f, \n", wdH[i].warp_reduced, wdH[i].warp_best.fitness);
-				print_dna(wdH[i].warp_best.dna);
-				printf(" \n");
-				print_dna(insect_dna);printf(" \n");printf(" \n");
+	   
+		// debug information
+	    if( false )
+	    {
+		// Verify that the result vector is correct
+		for (int i = 1; i < numElements; ++i)
+		{
+	 
+			//printf("%f, ", (double)h_C[i].sumFitness);
 		}
-	}
-    }
 
-printf("\nh_C[0]: %f\n, ", h_C[0].fitness);
+		for( int i = 0; i < numElements / 32; i++ )
+		{
+			if( i%64 ==0)
+			{	printf("warp_reduced: %f, warp_best: %f, \n", wdH[i].warp_reduced, wdH[i].warp_best.fitness);
+					print_dna(wdH[i].warp_best.dna);
+					printf(" \n");
+					print_dna(insect_dna);printf(" \n");printf(" \n");
+			}
+		}
+	    }
+
+	printf("\nh_C[0]: %f\n, ", h_C[0].fitness);
 
     printf("Test PASSED\n");
 
