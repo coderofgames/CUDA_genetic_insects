@@ -285,6 +285,20 @@ struct warp_data
 	Insect warp_best;
 	int complete;
 	int dna;
+
+	unsigned int blockIdx;
+	unsigned int warpId;
+	
+	__device__ void operator=(warp_data &o)
+	{
+		this->warp_reduced = o.warp_reduced;
+		this->warp_best = o.warp_best;
+		this->complete = o.complete;
+		this->dna = o.dna;
+		this->blockIdx = o.blockIdx;
+		this->warpId = o.warpId;
+
+	}
 };
 
 struct ret_data
@@ -311,6 +325,8 @@ __global__ void run_GA(Insect *in, int target, Insect *out, curandState *const r
 	Insect shared[WARP_SIZE*2];
 	static __shared__	
 	Insect swap[WARP_SIZE*2];
+
+	static __shared__ warp_data _warp_data;
 	
 	
 	
@@ -330,7 +346,15 @@ __global__ void run_GA(Insect *in, int target, Insect *out, curandState *const r
 	in[tid].fitness = 0.0f;
 	in[tid].sumFitness = 0.0f;
 
+
+	// load global data to shared
+
 	shared[laneID] = in[tid];
+	_warp_data = wd[blockIdx.x*(blockDim.x/WARP_SIZE)  + warpID];
+
+	_warp_data.blockIdx = blockIdx.x;
+	_warp_data.warpId = warpID;
+	
 
 	/* Migrations */
 	/*if( (warpID > 0)  && laneID == 0 )
@@ -393,11 +417,12 @@ __global__ void run_GA(Insect *in, int target, Insect *out, curandState *const r
 	}
 	else
 	{
-		if( count[laneID] >= 23 ) {
+		if( count[laneID] >= 24 ) {
 			//printf("Finished in loop iteratons, block: %d, warp: %d, thread: %d", blockIdx.x, warpID, laneID);
 			shared[laneID].fitness = 10000000;
-			wd[warpID].complete = 1010101010;
-			wd[warpID].dna = shared[laneID].dna;
+
+			_warp_data.complete = 1010101010;
+			_warp_data.dna = shared[laneID].dna;
 		
 		}
 		else
@@ -419,15 +444,16 @@ __global__ void run_GA(Insect *in, int target, Insect *out, curandState *const r
 
 	__syncwarp();
 
-	wd[blockIdx.x*(blockDim.x/WARP_SIZE) + warpID].warp_best = swap[WARP_SIZE-1];
+	_warp_data.warp_best = swap[WARP_SIZE-1];
 	
 	//warp_insect_all_reduce_2(swap, laneID);
 	warp_insect_scan(swap, laneID);
+
 	out[tid].sumFitness = swap[laneID].sumFitness;
 
 	__syncwarp();
 	//if( laneID == 0 ) // power saving
-	float warp_Reduced=	wd[blockIdx.x*(blockDim.x/WARP_SIZE)  + warpID].warp_reduced = swap[WARP_SIZE-1].sumFitness;
+	float warp_Reduced = _warp_data.warp_reduced = swap[WARP_SIZE-1].sumFitness;
 
 	
 	// breeding
@@ -438,7 +464,7 @@ __global__ void run_GA(Insect *in, int target, Insect *out, curandState *const r
 	/* Attempt to mask out the insects with low fitness 
 	 while cloning them 
 	*/
-	swap[laneID].dna = __shfl_sync(~NEWMASK, swap[laneID].dna, 15);
+	swap[laneID].dna = __shfl_sync(~NEWMASK, swap[laneID].dna, (laneID % 8 + 24));
 
 
 	
@@ -446,7 +472,7 @@ __global__ void run_GA(Insect *in, int target, Insect *out, curandState *const r
 
 	float breedingSelector = curand_uniform(&localState) * 31;
 
-	float cumulativeSum = 0.0f;
+
 	int crossover_selection = (int)breedingSelector;
 	/*for( int j = 0; j < 31; j++ )
 	{
@@ -463,24 +489,62 @@ __global__ void run_GA(Insect *in, int target, Insect *out, curandState *const r
 	__syncwarp();*/
 
 	 
-
-	//NEWMASK = FULLMASK << 24;
-	crossover_selection = __shfl_sync(NEWMASK, laneID, 8);
+	// can perform a different test for each warp.
+	if( warpID < 4 )
+	{
+		crossover_selection = __shfl_sync(NEWMASK, laneID, 8);
 	
-	// cloning the best index
-	int tempDNA = (swap[laneID].dna & (NEWMASK)) | (swap[crossover_selection].dna & (~NEWMASK));
-	__syncwarp();
+		// cloning the best index
+		NEWMASK = FULLMASK << 16;
+		int tempDNA = (swap[laneID].dna & (NEWMASK)) | (swap[crossover_selection].dna & (~NEWMASK));
+		
+		__syncwarp();
 
-	swap[laneID].dna = tempDNA;
-	//swap[laneID].dna = shared[laneID].dna;
+		swap[laneID].dna = tempDNA;
+		//swap[laneID].dna = shared[laneID].dna;
+	}
+	else
+	{
 
-/*migrations*/
+		int TESTER = WARP_SIZE / 2;
+		
+		
+		
+		// this is supposed to be a binary search over the 32 values to find the tcorrec
+		// 		 inddex for the breeding 
+		
+		// Because the cumulative sum of fitness is stored in each consecutive sorted member 
+		// we should be able to find the member whose sumfitness is less than randSelector and whose next neighbour
+		// has sumfitness greater ... using binary search roullette wheel
+		
+		for( int INCREMENT = TESTER/2; INCREMENT > 0; INCREMENT /=2 )
+		{
+			if( swap[TESTER -1].sumFitness >  breedingSelector ) TESTER -= INCREMENT;
+			else if( swap[TESTER].sumFitness <=  breedingSelector ) TESTER += INCREMENT;
+		}
+		crossover_selection = TESTER; // 1/32 probability of cloning, represented proportional to fitness
+		
+		NEWMASK = FULLMASK << 16; // swap at 50%
+		int tempDNA = (swap[laneID].dna & (NEWMASK)) | (swap[crossover_selection].dna & (~NEWMASK));
+		
+		__syncwarp();
+
+		swap[laneID].dna = tempDNA;
+	}
+	
+	__syncthreads();
+
+
+		/*migrations*/
 	if( laneID == 0 && warpID > 0)
-		swap[0] = wd[warpID-1].warp_best;
+		swap[0] = _warp_data.warp_best;
 
 	in[tid].dna = swap[laneID].dna;
 	in[tid].fitness = 0.0f;
 	in[tid].sumFitness = 0.0f;
+
+	wd[blockIdx.x*(blockDim.x/WARP_SIZE)  + warpID] = _warp_data;
+	
 	
 
 
@@ -580,7 +644,7 @@ int main(void)
 int FULLMASK = 0xffffffff;
 
 int test = FULLMASK << 24;
-	print_dna(test);
+	print_dna(~test);
     insect_test(true);
 
   return 0;
@@ -883,7 +947,7 @@ int p = 0;
 			if( wdH[i].complete == 1010101010 )
 			{
 				target_reached = true;
-				printf("TARGET_REACHED, warp_reduced: %f, warp_best: %f, \n", wdH[i].warp_reduced, wdH[i].warp_best.fitness);
+				printf("TARGET_REACHED, warp_reduced: %f, warp_best: %f, found at block ; %d, warp: %d \n", wdH[i].warp_reduced, wdH[i].warp_best.fitness, wdH[i].blockIdx, wdH[i].warpId % 8 );
 				
 				print_dna(wdH[i].warp_best.dna);
 				printf(" \n");
@@ -897,7 +961,7 @@ int p = 0;
 
 
 		{
-			printf("Target Reached at iteration %d", p);
+			printf("\n\n Target Reached at iteration %d", p);
 			break;
 		}
 	}
@@ -922,7 +986,7 @@ int p = 0;
     }
 
    
-    if( true )
+    if( false )
     {
         // Verify that the result vector is correct
         for (int i = 1; i < numElements; ++i)
