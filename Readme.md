@@ -1,6 +1,6 @@
 ### CUDA Genetic Insects
 
-The code is in Add_cuda
+The code is in Add.cu
    
 An simple example designed to implement genetic algorithms in CUDA, see Requirements.txt for more information.
    
